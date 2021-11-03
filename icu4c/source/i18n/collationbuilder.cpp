@@ -198,7 +198,7 @@ const int32_t CollationBuilder::HAS_BEFORE2;
 const int32_t CollationBuilder::HAS_BEFORE3;
 #endif
 
-CollationBuilder::CollationBuilder(const CollationTailoring *b, UErrorCode &errorCode)
+CollationBuilder::CollationBuilder(const CollationTailoring *b, UBool canonicalClosure, UErrorCode &errorCode)
         : nfd(*Normalizer2::getNFDInstance(errorCode)),
           fcd(*Normalizer2Factory::getFCDInstance(errorCode)),
           nfcImpl(*Normalizer2Factory::getNFCImpl(errorCode)),
@@ -207,6 +207,7 @@ CollationBuilder::CollationBuilder(const CollationTailoring *b, UErrorCode &erro
           rootElements(b->data->rootElements, b->data->rootElementsLength),
           variableTop(0),
           dataBuilder(new CollationDataBuilder(errorCode)), fastLatinEnabled(TRUE),
+          computeCanonicalClosure(canonicalClosure),
           errorReason(NULL),
           cesLength(0),
           rootPrimaryIndexes(errorCode), nodes(errorCode) {
@@ -219,11 +220,15 @@ CollationBuilder::CollationBuilder(const CollationTailoring *b, UErrorCode &erro
         errorCode = U_MEMORY_ALLOCATION_ERROR;
         return;
     }
-    dataBuilder->initForTailoring(baseData, errorCode);
+    dataBuilder->initForTailoring(baseData, canonicalClosure, errorCode);
     if(U_FAILURE(errorCode)) {
         errorReason = "CollationBuilder initialization failed";
     }
 }
+
+CollationBuilder::CollationBuilder(const CollationTailoring *b, UErrorCode &errorCode)
+  : CollationBuilder(b, TRUE, errorCode)
+{}
 
 CollationBuilder::~CollationBuilder() {
     delete dataBuilder;
@@ -262,15 +267,19 @@ CollationBuilder::parseAndBuild(const UnicodeString &ruleString,
     if(U_FAILURE(errorCode)) { return NULL; }
     if(dataBuilder->hasMappings()) {
         makeTailoredCEs(errorCode);
-        closeOverComposites(errorCode);
+        if (computeCanonicalClosure) {
+            closeOverComposites(errorCode);
+        }
         finalizeCEs(errorCode);
-        // Copy all of ASCII, and Latin-1 letters, into each tailoring.
-        optimizeSet.add(0, 0x7f);
-        optimizeSet.add(0xc0, 0xff);
-        // Hangul is decomposed on the fly during collation,
-        // and the tailoring data is always built with HANGUL_TAG specials.
-        optimizeSet.remove(Hangul::HANGUL_BASE, Hangul::HANGUL_END);
-        dataBuilder->optimize(optimizeSet, errorCode);
+        if (computeCanonicalClosure) {
+            // Copy all of ASCII, and Latin-1 letters, into each tailoring.
+            optimizeSet.add(0, 0x7f);
+            optimizeSet.add(0xc0, 0xff);
+            // Hangul is decomposed on the fly during collation,
+            // and the tailoring data is always built with HANGUL_TAG specials.
+            optimizeSet.remove(Hangul::HANGUL_BASE, Hangul::HANGUL_END);
+            dataBuilder->optimize(optimizeSet, errorCode);
+        }
         tailoring->ensureOwnedData(errorCode);
         if(U_FAILURE(errorCode)) { return NULL; }
         if(fastLatinEnabled) { dataBuilder->enableFastLatin(); }
@@ -750,7 +759,11 @@ CollationBuilder::addRelation(int32_t strength, const UnicodeString &prefix,
         // so that it is possible to explicitly provide the missing mappings.
         ce32 = addIfDifferent(prefix, str, ces, cesLength, ce32, errorCode);
     }
-    addWithClosure(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
+    if (computeCanonicalClosure) {
+        addWithClosure(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
+    } else {
+        addIfDifferent(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
+    }
     if(U_FAILURE(errorCode)) {
         parserErrorReason = "writing collation elements";
         return;
@@ -1612,7 +1625,7 @@ CollationBuilder::finalizeCEs(UErrorCode &errorCode) {
     if(U_FAILURE(errorCode)) {
         return;
     }
-    newBuilder->initForTailoring(baseData, errorCode);
+    newBuilder->initForTailoring(baseData, computeCanonicalClosure, errorCode);
     CEFinalizer finalizer(nodes.getBuffer());
     newBuilder->copyFrom(*dataBuilder, finalizer, errorCode);
     if(U_FAILURE(errorCode)) { return; }

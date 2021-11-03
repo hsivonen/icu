@@ -303,7 +303,7 @@ CollationDataBuilder::~CollationDataBuilder() {
 }
 
 void
-CollationDataBuilder::initForTailoring(const CollationData *b, UErrorCode &errorCode) {
+CollationDataBuilder::initForTailoring(const CollationData *b, UBool computeCanonicalClosure, UErrorCode &errorCode) {
     if(U_FAILURE(errorCode)) { return; }
     if(trie != NULL) {
         errorCode = U_INVALID_STATE_ERROR;
@@ -318,25 +318,27 @@ CollationDataBuilder::initForTailoring(const CollationData *b, UErrorCode &error
     // For a tailoring, the default is to fall back to the base.
     trie = utrie2_open(Collation::FALLBACK_CE32, Collation::FFFD_CE32, &errorCode);
 
-    // Set the Latin-1 letters block so that it is allocated first in the data array,
-    // to try to improve locality of reference when sorting Latin-1 text.
-    // Do not use utrie2_setRange32() since that will not actually allocate blocks
-    // that are filled with the default value.
-    // ASCII (0..7F) is already preallocated anyway.
-    for(UChar32 c = 0xc0; c <= 0xff; ++c) {
-        utrie2_set32(trie, c, Collation::FALLBACK_CE32, &errorCode);
+    if (computeCanonicalClosure) {
+        // Set the Latin-1 letters block so that it is allocated first in the data array,
+        // to try to improve locality of reference when sorting Latin-1 text.
+        // Do not use utrie2_setRange32() since that will not actually allocate blocks
+        // that are filled with the default value.
+        // ASCII (0..7F) is already preallocated anyway.
+        for(UChar32 c = 0xc0; c <= 0xff; ++c) {
+            utrie2_set32(trie, c, Collation::FALLBACK_CE32, &errorCode);
+        }
+
+        // Hangul syllables are not tailorable (except via tailoring Jamos).
+        // Always set the Hangul tag to help performance.
+        // Do this here, rather than in buildMappings(),
+        // so that we see the HANGUL_TAG in various assertions.
+        uint32_t hangulCE32 = Collation::makeCE32FromTagAndIndex(Collation::HANGUL_TAG, 0);
+        utrie2_setRange32(trie, Hangul::HANGUL_BASE, Hangul::HANGUL_END, hangulCE32, TRUE, &errorCode);
+
+        // Copy the set contents but don't copy/clone the set as a whole because
+        // that would copy the isFrozen state too.
+        unsafeBackwardSet.addAll(*b->unsafeBackwardSet);
     }
-
-    // Hangul syllables are not tailorable (except via tailoring Jamos).
-    // Always set the Hangul tag to help performance.
-    // Do this here, rather than in buildMappings(),
-    // so that we see the HANGUL_TAG in various assertions.
-    uint32_t hangulCE32 = Collation::makeCE32FromTagAndIndex(Collation::HANGUL_TAG, 0);
-    utrie2_setRange32(trie, Hangul::HANGUL_BASE, Hangul::HANGUL_END, hangulCE32, TRUE, &errorCode);
-
-    // Copy the set contents but don't copy/clone the set as a whole because
-    // that would copy the isFrozen state too.
-    unsafeBackwardSet.addAll(*b->unsafeBackwardSet);
 
     if(U_FAILURE(errorCode)) { return; }
 }

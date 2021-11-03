@@ -84,7 +84,8 @@ enum
     WRITE_POOL_BUNDLE,
     USE_POOL_BUNDLE,
     INCLUDE_UNIHAN_COLL,
-    FILTERDIR
+    FILTERDIR,
+    ICU4X_MODE
 };
 
 UOption options[]={
@@ -111,6 +112,7 @@ UOption options[]={
                       UOPTION_DEF("usePoolBundle", '\x01', UOPT_OPTIONAL_ARG),/* 20 */
                       UOPTION_DEF("includeUnihanColl", '\x01', UOPT_NO_ARG),/* 21 */ /* temporary, don't display in usage info */
                       UOPTION_DEF("filterDir", '\x01', UOPT_OPTIONAL_ARG), /* 22 */
+                      UOPTION_DEF("icu4xMode", 'X', UOPT_NO_ARG),/* 23 */
                   };
 
 static     UBool       write_java = FALSE;
@@ -656,7 +658,7 @@ processFile(const char *filename, const char *cp,
     }
     /* Parse the data into an SRBRoot */
     data.adoptInstead(parse(ucbuf.getAlias(), inputDir, outputDir, filename,
-            !omitBinaryCollation, options[NO_COLLATION_RULES].doesOccur, &status));
+            !omitBinaryCollation, options[NO_COLLATION_RULES].doesOccur, options[ICU4X_MODE].doesOccur, &status));
 
     if (data.isNull() || U_FAILURE(status)) {
         fprintf(stderr, "couldn't parse the file %s. Error:%s\n", filename, u_errorName(status));

@@ -64,7 +64,7 @@ public:
 
     virtual ~CollationDataBuilder();
 
-    void initForTailoring(const CollationData *b, UErrorCode &errorCode);
+    void initForTailoring(const CollationData *b, UBool computeCanonicalClosure, UErrorCode &errorCode);
 
     virtual UBool isCompressibleLeadByte(uint32_t b) const;
 

@@ -13,6 +13,7 @@
 #include "unicode/uniset.h"
 #include "unicode/putil.h"
 #include "unicode/umutablecptrie.h"
+#include "unicode/normalizer2.h"
 #include "writesrc.h"
 
 U_NAMESPACE_USE
@@ -121,6 +122,102 @@ FILE* prepareOutputFile(const char* basename) {
     usrc_writeFileNameGeneratedBy(f, "#", basename, "icuexportdata.cpp");
 
     return f;
+}
+
+// Dumps data for canonical decompostitions
+void dumpDecompositions() {
+    IcuToolErrorCode status("icuexportdata: dumpDecompositions");
+    const char* basename = "decompositions";
+    FILE* f = prepareOutputFile(basename);
+    // Zero is a magic number that means decomposes to itself.
+    LocalUMutableCPTriePointer builder(umutablecptrie_open(0, 0, status));
+    const Normalizer2* norm = Normalizer2::getNFDInstance(status);
+    // Max length as of Unicode 14 is 4, but let's make the buffer size
+    // 7, since the bit handling below can deal with lengths that long.
+    const int32_t DECOMPOSITION_BUFFER_SIZE = 7;
+    UChar32 utf32[DECOMPOSITION_BUFFER_SIZE];
+    std::vector<uint32_t> storage32;
+    std::vector<uint16_t> storage16;
+    // Iterate over all scalar values excluding Hangul syllables.
+    for (UChar32 c = 0; c <= 0x10FFFF; ++c) {
+        if (c >= 0xAC00 && c <= 0xD7A3) {
+            // Hangul syllable
+            continue;
+        }
+        if (c >= 0xD800 && c < 0xE000) {
+            // Surrogate
+            continue;
+        }
+        UnicodeString src;
+        UnicodeString dst;
+        src.append(c);
+        norm->normalize(src, dst, status);
+        if (src == dst) {
+            continue;
+        }
+        int32_t len = dst.toUTF32(utf32, DECOMPOSITION_BUFFER_SIZE, status);
+        if (len == 0 || len > 4) { // 4 is max as of Unicode 14
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, basename);
+        } else if (len == 1 && utf32[0] <= 0xFFFF) {
+            umutablecptrie_set(builder.getAlias(), c, utf32[0] << 16, status);
+        } else if (len == 2 && utf32[0] <= 0xFFFF && utf32[1] <= 0xFFFF) {
+            umutablecptrie_set(builder.getAlias(), c, (utf32[0] << 16) | utf32[1], status);
+        } else {
+            UBool astral = FALSE;
+            for (int32_t i = 0; i < len; ++i) {
+                if (utf32[i] > 0xFFFF) {
+                    astral = TRUE;
+                }
+                if (utf32[i] == 0) {
+                    status.set(U_INTERNAL_PROGRAM_ERROR);
+                    handleError(status, basename);                
+                }
+            }
+            // Format for 16-bit value:
+            // Three highest bits: length (always makes the whole thing non-zero)
+            // Fourth-highes bit: 0 if 16-bit units, 1 if 32-bit units
+            // Lower bits: Start index in storage
+            uint32_t descriptor = uint32_t(astral) << 12;
+            descriptor |= uint32_t(len) << 13;
+            size_t index;
+            if (astral) {
+                index = storage32.size();
+            } else {
+                index = storage16.size();
+            }
+            if (index > 0xFFF) {
+                status.set(U_INTERNAL_PROGRAM_ERROR);
+                handleError(status, basename);                
+            }
+            descriptor |= uint32_t(index);
+            if (!descriptor || descriptor > 0xFFFF) {
+                // The code above is somehow broken
+                status.set(U_INTERNAL_PROGRAM_ERROR);
+                handleError(status, basename);                
+            }
+            if (astral) {
+                for (int32_t i = 0; i < len; ++i) {
+                    storage32.push_back(uint32_t(utf32[i]));
+                }
+            } else {
+                for (int32_t i = 0; i < len; ++i) {
+                    storage16.push_back(uint16_t(utf32[i]));
+                }
+            }
+            umutablecptrie_set(builder.getAlias(), c, descriptor, status);
+        }
+    }
+    LocalUCPTriePointer utrie(umutablecptrie_buildImmutable(
+        builder.getAlias(),
+        trieType,
+        UCPTRIE_VALUE_BITS_32,
+        status));
+    handleError(status, basename);
+    usrc_writeArray(f, "scalars16 = [\n  ", storage16.data(), 16, storage16.size(), "  ", "\n]\n");
+    usrc_writeArray(f, "scalars32 = [\n  ", storage32.data(), 32, storage32.size(), "  ", "\n]\n");
+    fputs("[trie]\n", f);
+    usrc_writeUCPTrie(f, "decompositions", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
 }
 
 enum {
@@ -235,6 +332,11 @@ int main(int argc, char* argv[]) {
     }
 
     const char* mode = options[OPT_MODE].value;
+    if (uprv_strcmp(mode, "decompositions") == 0) {
+        dumpDecompositions();
+        return 0;
+    }
+
     if (uprv_strcmp(mode, "uprops") != 0) {
         fprintf(stderr, "Invalid option for --mode (must be uprops)\n");
         return U_ILLEGAL_ARGUMENT_ERROR;

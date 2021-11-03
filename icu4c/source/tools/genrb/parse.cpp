@@ -119,6 +119,7 @@ typedef struct {
     const char     *filename;
     UBool           makeBinaryCollation;
     UBool           omitCollationRules;
+    UBool           icu4xMode;
 } ParseState;
 
 typedef struct SResource *
@@ -764,7 +765,7 @@ GenrbImporter::getRules(
 
     /* Parse the data into an SRBRoot */
     LocalPointer<SRBRoot> data(
-            parse(ucbuf.getAlias(), inputDir, outputDir, filename.data(), FALSE, FALSE, &errorCode));
+            parse(ucbuf.getAlias(), inputDir, outputDir, filename.data(), FALSE, FALSE, FALSE, &errorCode));
     if (U_FAILURE(errorCode)) {
         return;
     }
@@ -952,8 +953,8 @@ addCollation(ParseState* state, TableResource  *result, const char *collationTyp
         res_close(result);
         return NULL;  // TODO: use LocalUResourceBundlePointer for result
     }
-    icu::CollationBuilder builder(base, intStatus);
-    if(uprv_strncmp(collationType, "search", 6) == 0) {
+    icu::CollationBuilder builder(base, !state->icu4xMode, intStatus);
+    if(state->icu4xMode || (uprv_strncmp(collationType, "search", 6) == 0)) {
         builder.disableFastLatin();  // build fast-Latin table unless search collator
     }
     LocalPointer<icu::CollationTailoring> t(
@@ -1966,7 +1967,7 @@ parseResource(ParseState* state, char *tag, const struct UString *comment, UErro
 /* parse the top-level resource */
 struct SRBRoot *
 parse(UCHARBUF *buf, const char *inputDir, const char *outputDir, const char *filename,
-      UBool makeBinaryCollation, UBool omitCollationRules, UErrorCode *status)
+      UBool makeBinaryCollation, UBool omitCollationRules, UBool icu4xMode, UErrorCode *status)
 {
     struct UString    *tokenValue;
     struct UString    comment;
@@ -1992,6 +1993,7 @@ parse(UCHARBUF *buf, const char *inputDir, const char *outputDir, const char *fi
     state.filename = filename;
     state.makeBinaryCollation = makeBinaryCollation;
     state.omitCollationRules = omitCollationRules;
+    state.icu4xMode = icu4xMode;
 
     ustr_init(&comment);
     expect(&state, TOK_STRING, &tokenValue, &comment, NULL, status);
