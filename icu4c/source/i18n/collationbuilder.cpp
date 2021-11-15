@@ -198,7 +198,7 @@ const int32_t CollationBuilder::HAS_BEFORE2;
 const int32_t CollationBuilder::HAS_BEFORE3;
 #endif
 
-CollationBuilder::CollationBuilder(const CollationTailoring *b, UBool canonicalClosure, UErrorCode &errorCode)
+CollationBuilder::CollationBuilder(const CollationTailoring *b, UBool icu4xMode, UErrorCode &errorCode)
         : nfd(*Normalizer2::getNFDInstance(errorCode)),
           fcd(*Normalizer2Factory::getFCDInstance(errorCode)),
           nfcImpl(*Normalizer2Factory::getNFCImpl(errorCode)),
@@ -207,7 +207,7 @@ CollationBuilder::CollationBuilder(const CollationTailoring *b, UBool canonicalC
           rootElements(b->data->rootElements, b->data->rootElementsLength),
           variableTop(0),
           dataBuilder(new CollationDataBuilder(errorCode)), fastLatinEnabled(TRUE),
-          computeCanonicalClosure(canonicalClosure),
+          icu4xMode(icu4xMode),
           errorReason(NULL),
           cesLength(0),
           rootPrimaryIndexes(errorCode), nodes(errorCode) {
@@ -220,7 +220,7 @@ CollationBuilder::CollationBuilder(const CollationTailoring *b, UBool canonicalC
         errorCode = U_MEMORY_ALLOCATION_ERROR;
         return;
     }
-    dataBuilder->initForTailoring(baseData, canonicalClosure, errorCode);
+    dataBuilder->initForTailoring(baseData, icu4xMode, errorCode);
     if(U_FAILURE(errorCode)) {
         errorReason = "CollationBuilder initialization failed";
     }
@@ -267,11 +267,11 @@ CollationBuilder::parseAndBuild(const UnicodeString &ruleString,
     if(U_FAILURE(errorCode)) { return NULL; }
     if(dataBuilder->hasMappings()) {
         makeTailoredCEs(errorCode);
-        if (computeCanonicalClosure) {
+        if (icu4xMode) {
             closeOverComposites(errorCode);
         }
         finalizeCEs(errorCode);
-        if (computeCanonicalClosure) {
+        if (icu4xMode) {
             // Copy all of ASCII, and Latin-1 letters, into each tailoring.
             optimizeSet.add(0, 0x7f);
             optimizeSet.add(0xc0, 0xff);
@@ -752,14 +752,14 @@ CollationBuilder::addRelation(int32_t strength, const UnicodeString &prefix,
         }
     }
     uint32_t ce32 = Collation::UNASSIGNED_CE32;
-    if((prefix != nfdPrefix || str != nfdString) &&
+    if(!icu4xMode && (prefix != nfdPrefix || str != nfdString) &&
             !ignorePrefix(prefix, errorCode) && !ignoreString(str, errorCode)) {
         // Map from the original input to the CEs.
         // We do this in case the canonical closure is incomplete,
         // so that it is possible to explicitly provide the missing mappings.
         ce32 = addIfDifferent(prefix, str, ces, cesLength, ce32, errorCode);
     }
-    if (computeCanonicalClosure) {
+    if (icu4xMode) {
         addWithClosure(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
     } else {
         addIfDifferent(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
@@ -1625,7 +1625,7 @@ CollationBuilder::finalizeCEs(UErrorCode &errorCode) {
     if(U_FAILURE(errorCode)) {
         return;
     }
-    newBuilder->initForTailoring(baseData, computeCanonicalClosure, errorCode);
+    newBuilder->initForTailoring(baseData, icu4xMode, errorCode);
     CEFinalizer finalizer(nodes.getBuffer());
     newBuilder->copyFrom(*dataBuilder, finalizer, errorCode);
     if(U_FAILURE(errorCode)) { return; }

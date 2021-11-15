@@ -138,6 +138,7 @@ void dumpDecompositions() {
     UChar32 utf32[DECOMPOSITION_BUFFER_SIZE];
     std::vector<uint32_t> storage32;
     std::vector<uint16_t> storage16;
+    USet* uset = uset_openEmpty();
     // Iterate over all scalar values excluding Hangul syllables.
     for (UChar32 c = 0; c <= 0x10FFFF; ++c) {
         if (c >= 0xAC00 && c <= 0xD7A3) {
@@ -152,10 +153,19 @@ void dumpDecompositions() {
         UnicodeString dst;
         src.append(c);
         norm->normalize(src, dst, status);
+        int32_t len = dst.toUTF32(utf32, DECOMPOSITION_BUFFER_SIZE, status);
+        // if (c == 0x0344 || c == 0x0F73 || c == 0x0F75 || c == 0x0F81) {
+        //     printf("Character: %X\n", c);
+        //     for (int32_t i = 0; i < len; ++i) {
+        //         printf("  %X\n", utf32[i]);
+        //     }
+        // }
+        if (len > 0 && u_getCombiningClass(utf32[0])) {
+            uset_add(uset, c);
+        }
         if (src == dst) {
             continue;
         }
-        int32_t len = dst.toUTF32(utf32, DECOMPOSITION_BUFFER_SIZE, status);
         if (len == 0 || len > 4) { // 4 is max as of Unicode 14
             status.set(U_INTERNAL_PROGRAM_ERROR);
             handleError(status, basename);
@@ -216,8 +226,10 @@ void dumpDecompositions() {
     handleError(status, basename);
     usrc_writeArray(f, "scalars16 = [\n  ", storage16.data(), 16, storage16.size(), "  ", "\n]\n");
     usrc_writeArray(f, "scalars32 = [\n  ", storage32.data(), 32, storage32.size(), "  ", "\n]\n");
-    fputs("[trie]\n", f);
-    usrc_writeUCPTrie(f, "decompositions", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
+    usrc_writeUnicodeSet(f, uset, UPRV_TARGET_SYNTAX_TOML);
+    fprintf(f, "[trie]\n");
+    usrc_writeUCPTrie(f, "trie", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
+    uset_close(uset);
 }
 
 enum {

@@ -64,7 +64,7 @@ public:
 
     virtual ~CollationDataBuilder();
 
-    void initForTailoring(const CollationData *b, UBool computeCanonicalClosure, UErrorCode &errorCode);
+    void initForTailoring(const CollationData *b, UBool icu4xMode, UErrorCode &errorCode);
 
     virtual UBool isCompressibleLeadByte(uint32_t b) const;
 
@@ -246,6 +246,7 @@ protected:
     UnicodeString contexts;
     UnicodeSet unsafeBackwardSet;
     UBool modified;
+    UBool icu4xMode;
 
     UBool fastLatinEnabled;
     CollationFastLatinBuilder *fastLatinBuilder;

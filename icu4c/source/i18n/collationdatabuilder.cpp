@@ -289,6 +289,7 @@ CollationDataBuilder::CollationDataBuilder(UErrorCode &errorCode)
           trie(NULL),
           ce32s(errorCode), ce64s(errorCode), conditionalCE32s(errorCode),
           modified(FALSE),
+          icu4xMode(FALSE),
           fastLatinEnabled(FALSE), fastLatinBuilder(NULL),
           collIter(NULL) {
     // Reserve the first CE32 for U+0000.
@@ -303,8 +304,9 @@ CollationDataBuilder::~CollationDataBuilder() {
 }
 
 void
-CollationDataBuilder::initForTailoring(const CollationData *b, UBool computeCanonicalClosure, UErrorCode &errorCode) {
+CollationDataBuilder::initForTailoring(const CollationData *b, UBool icu4xMode, UErrorCode &errorCode) {
     if(U_FAILURE(errorCode)) { return; }
+    this->icu4xMode = icu4xMode;
     if(trie != NULL) {
         errorCode = U_INVALID_STATE_ERROR;
         return;
@@ -318,7 +320,7 @@ CollationDataBuilder::initForTailoring(const CollationData *b, UBool computeCano
     // For a tailoring, the default is to fall back to the base.
     trie = utrie2_open(Collation::FALLBACK_CE32, Collation::FFFD_CE32, &errorCode);
 
-    if (computeCanonicalClosure) {
+    if (icu4xMode) {
         // Set the Latin-1 letters block so that it is allocated first in the data array,
         // to try to improve locality of reference when sorting Latin-1 text.
         // Do not use utrie2_setRange32() since that will not actually allocate blocks
@@ -557,6 +559,59 @@ CollationDataBuilder::addCE32(const UnicodeString &prefix, const UnicodeString &
     int32_t cLength = U16_LENGTH(c);
     uint32_t oldCE32 = utrie2_get32(trie, c);
     UBool hasContext = !prefix.isEmpty() || s.length() > cLength;
+
+    static int32_t longestPrefix = 0;
+    if (!prefix.isEmpty()) {
+        UChar32 utf32[4];
+        int32_t len = prefix.toUTF32(utf32, 4, errorCode);
+        if (len > longestPrefix) {
+            longestPrefix = len;
+            printf("Longest prefix: %d\n", longestPrefix);
+        }
+        for (int i = 0; i < len; ++i) {
+            if (u_getCombiningClass(utf32[i]) || utf32[i] == 0x0F73 || utf32[i] == 0x0F75 || utf32[i] == 0x0F81) {
+                if (i == 1 && !(utf32[i] == 0x3099 || utf32[i] == 0x309A)) {
+                    printf("PREFIX CONTAINS NON-STARTER %X in position %d\n", utf32[i], i);
+                }
+            }
+            if (i == 1 && !u_getCombiningClass(utf32[i])) {
+                printf("Second Starter\n");
+            }
+        }
+    }
+    static int32_t longestContraction = 0;
+    if (s.length() > cLength) {
+        UChar32 utf32[20];
+        int32_t len = s.toUTF32(utf32, 20, errorCode);
+        if (u_getCombiningClass(utf32[0])) {
+            printf("Contraction starts with non-starter: %X; ccc: %d\n", utf32[0], u_getCombiningClass(utf32[0]));
+            for (int i = 1; i < len; ++i) {
+                printf("  %X; ccc: %d\n", utf32[i], u_getCombiningClass(utf32[i]));
+            }
+        } else if (u_getCombiningClass(utf32[1])) {
+            // Second is non-starter
+            for (int i = 2; i < len; ++i) {
+                if (!u_getCombiningClass(utf32[i])) {
+                    printf("Contraction has starter, non-starter, starter: %X, %X, %X, %d\n", utf32[0], utf32[1], utf32[i], i);
+                }
+            }
+        } else {
+            // First and second are starters
+            for (int i = 2; i < len; ++i) {
+                if (u_getCombiningClass(utf32[i])) {
+                    printf("Contraction has starter, starter, non-starter: %X, %X, %X, %d\n", utf32[0], utf32[1], utf32[i], i);
+                }
+            }
+        }
+        if (len > longestContraction) {
+            longestContraction = len;
+            printf("Longest contraction suffix: %d\n", longestContraction - 1);
+        }
+        // if (len > 1) {
+        //     printf("Found contraction\n");
+        // }
+    }
+
     if(oldCE32 == Collation::FALLBACK_CE32) {
         // First tailoring for c.
         // If c has contextual base mappings or if we add a contextual mapping,
