@@ -124,12 +124,12 @@ FILE* prepareOutputFile(const char* basename) {
     return f;
 }
 
-// Dumps data for canonical decompostitions
+// Dumps data for canonical decompositions
 void dumpDecompositions() {
     IcuToolErrorCode status("icuexportdata: dumpDecompositions");
     const char* basename = "decompositions";
     FILE* f = prepareOutputFile(basename);
-    // Zero is a magic number that means decomposes to itself.
+    // Zero is a magic number that means the character decomposes to itself.
     LocalUMutableCPTriePointer builder(umutablecptrie_open(0, 0, status));
     const Normalizer2* norm = Normalizer2::getNFDInstance(status);
     // Max length as of Unicode 14 is 4, but let's make the buffer size
@@ -154,19 +154,13 @@ void dumpDecompositions() {
         src.append(c);
         norm->normalize(src, dst, status);
         int32_t len = dst.toUTF32(utf32, DECOMPOSITION_BUFFER_SIZE, status);
-        // if (c == 0x0344 || c == 0x0F73 || c == 0x0F75 || c == 0x0F81) {
-        //     printf("Character: %X\n", c);
-        //     for (int32_t i = 0; i < len; ++i) {
-        //         printf("  %X\n", utf32[i]);
-        //     }
-        // }
         if (len > 0 && u_getCombiningClass(utf32[0])) {
             uset_add(uset, c);
         }
         if (src == dst) {
             continue;
         }
-        if (len == 0 || len > 4) { // 4 is max as of Unicode 14
+        if (len < 1 || len > DECOMPOSITION_BUFFER_SIZE) {
             status.set(U_INTERNAL_PROGRAM_ERROR);
             handleError(status, basename);
         } else if (len == 1 && utf32[0] <= 0xFFFF) {
@@ -174,10 +168,10 @@ void dumpDecompositions() {
         } else if (len == 2 && utf32[0] <= 0xFFFF && utf32[1] <= 0xFFFF) {
             umutablecptrie_set(builder.getAlias(), c, (utf32[0] << 16) | utf32[1], status);
         } else {
-            UBool astral = FALSE;
+            UBool supplementary = FALSE;
             for (int32_t i = 0; i < len; ++i) {
                 if (utf32[i] > 0xFFFF) {
-                    astral = TRUE;
+                    supplementary = TRUE;
                 }
                 if (utf32[i] == 0) {
                     status.set(U_INTERNAL_PROGRAM_ERROR);
@@ -185,13 +179,15 @@ void dumpDecompositions() {
                 }
             }
             // Format for 16-bit value:
-            // Three highest bits: length (always makes the whole thing non-zero)
-            // Fourth-highes bit: 0 if 16-bit units, 1 if 32-bit units
+            // Three highest bits: length (always makes the whole thing non-zero, since
+            // zero is not a length in use; one bit is "wasted" in order to ensure the
+            // 16 bits always end up being non-zero as a whole)
+            // Fourth-highest bit: 0 if 16-bit units, 1 if 32-bit units
             // Lower bits: Start index in storage
-            uint32_t descriptor = uint32_t(astral) << 12;
+            uint32_t descriptor = uint32_t(supplementary) << 12;
             descriptor |= uint32_t(len) << 13;
             size_t index;
-            if (astral) {
+            if (supplementary) {
                 index = storage32.size();
             } else {
                 index = storage16.size();
@@ -202,11 +198,11 @@ void dumpDecompositions() {
             }
             descriptor |= uint32_t(index);
             if (!descriptor || descriptor > 0xFFFF) {
-                // The code above is somehow broken
+                // Should never happen if the code above is correct.
                 status.set(U_INTERNAL_PROGRAM_ERROR);
                 handleError(status, basename);                
             }
-            if (astral) {
+            if (supplementary) {
                 for (int32_t i = 0; i < len; ++i) {
                     storage32.push_back(uint32_t(utf32[i]));
                 }
@@ -230,6 +226,7 @@ void dumpDecompositions() {
     fprintf(f, "[trie]\n");
     usrc_writeUCPTrie(f, "trie", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
     uset_close(uset);
+    fclose(f);
 }
 
 enum {

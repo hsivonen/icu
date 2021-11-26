@@ -318,9 +318,11 @@ CollationDataBuilder::initForTailoring(const CollationData *b, UBool icu4xMode, 
     base = b;
 
     // For a tailoring, the default is to fall back to the base.
-    trie = utrie2_open(Collation::FALLBACK_CE32, Collation::FFFD_CE32, &errorCode);
+    // For ICU4X, use the same value for fallback as for the default
+    // to avoid having to have different blocks for the two.
+    trie = utrie2_open(Collation::FALLBACK_CE32, icu4xMode ? Collation::FALLBACK_CE32 : Collation::FFFD_CE32, &errorCode);
 
-    if (icu4xMode) {
+    if (!icu4xMode) {
         // Set the Latin-1 letters block so that it is allocated first in the data array,
         // to try to improve locality of reference when sorting Latin-1 text.
         // Do not use utrie2_setRange32() since that will not actually allocate blocks

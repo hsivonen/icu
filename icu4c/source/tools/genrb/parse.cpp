@@ -42,6 +42,7 @@
 #include "reslist.h"
 #include "rbt_pars.h"
 #include "genrb.h"
+#include "unicode/normalizer2.h"
 #include "unicode/stringpiece.h"
 #include "unicode/unistr.h"
 #include "unicode/ustring.h"
@@ -59,6 +60,7 @@
 #include "collationruleparser.h"
 #include "collationtailoring.h"
 #include <stdio.h>
+#include "writesrc.h"
 
 /* Number of tokens to read ahead of the current stream position */
 #define MAX_LOOKAHEAD   3
@@ -810,6 +812,135 @@ escape(const UChar *s, char *buffer) {
 
 #endif  // !UCONFIG_NO_COLLATION
 
+static FILE*
+openTOML(const char* outputdir, const char* name, const char* collationType, const char* structType, UErrorCode *status) {
+    CharString baseName;
+    baseName.append(name, *status);
+    baseName.append("_", *status);
+    baseName.append(collationType, *status);
+    baseName.append("_", *status);
+    baseName.append(structType, *status);
+
+    CharString outFileName;
+    if (outputdir && *outputdir) {
+        outFileName.append(outputdir, *status).ensureEndsWithFileSeparator(*status);
+    }
+    outFileName.append(baseName, *status);
+    outFileName.append(".toml", *status);
+    if (U_FAILURE(*status)) {
+        return NULL;
+    }
+
+    FILE* f = fopen(outFileName.data(), "w");
+    if (!f) {
+        *status = U_FILE_ACCESS_ERROR;
+        return NULL;
+    }
+    usrc_writeFileNameGeneratedBy(f, "#", baseName.data(), "genrb -X");
+
+    return f;
+}
+
+static void
+writeCollationMetadataTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UErrorCode *status) {
+    FILE* f = openTOML(outputdir, name, collationType, "meta", status);
+    if (!f) {
+        return;
+    }
+    printf("writeCollationMetadataTOML %s %s\n", name, collationType);
+    fclose(f);
+}
+
+static UBool
+convertTrie(const void *context, UChar32 start, UChar32 end, uint32_t value) {
+    icu::IcuToolErrorCode status("genrb: convertTrie");
+    umutablecptrie_setRange((UMutableCPTrie*)context, start, end, value, status);
+    return !U_FAILURE(*status);
+}
+
+static void
+writeCollationDataTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UBool root, UErrorCode *status) {
+    FILE* f = openTOML(outputdir, name, collationType, "data", status);
+    if (!f) {
+        return;
+    }
+    printf("writeCollationDataTOML %s %s\n", name, collationType);
+
+    icu::UnicodeSet tailoringSet;
+
+    if (data->base) {
+        tailoringSet.addAll(*(data->unsafeBackwardSet));
+        tailoringSet.removeAll(*(data->base->unsafeBackwardSet));
+    } else {
+        tailoringSet.addAll(*(data->unsafeBackwardSet));
+    }
+
+#if 0
+    // TODO avoid the duplicate work of computing the characters to remove
+    const icu::Normalizer2* norm = icu::Normalizer2::getNFDInstance(*status);
+    // Max length as of Unicode 14 is 4, but let's make the buffer size
+    // 7 to match NFD data generation for ICU4X.
+    const int32_t DECOMPOSITION_BUFFER_SIZE = 7;
+    UChar32 utf32[DECOMPOSITION_BUFFER_SIZE];
+    // Iterate over all scalar values excluding Hangul syllables.
+    for (UChar32 c = 0; c <= 0x10FFFF; ++c) {
+        if (c >= 0xAC00 && c <= 0xD7A3) {
+            // Hangul syllable
+            continue;
+        }
+        if (c >= 0xD800 && c < 0xE000) {
+            // Surrogate
+            continue;
+        }
+        UnicodeString src;
+        UnicodeString dst;
+        src.append(c);
+        norm->normalize(src, dst, *status);
+        int32_t len = dst.toUTF32(utf32, DECOMPOSITION_BUFFER_SIZE, *status);
+        if (len > 0 && u_getCombiningClass(utf32[0])) {
+            tailoringSet.remove(c);
+        }
+    }
+#endif
+
+    // Use the same value for out-of-range and default in the hope of not having to allocate
+    // different blocks, since ICU4X never does out-of-range queries.
+    uint32_t trieDefault = root ? icu::Collation::UNASSIGNED_CE32 : icu::Collation::FALLBACK_CE32;
+    icu::LocalUMutableCPTriePointer builder(umutablecptrie_open(trieDefault, trieDefault, status));
+
+    utrie2_enum(data->trie, NULL, &convertTrie, builder.getAlias());
+
+    icu::LocalUCPTriePointer utrie(umutablecptrie_buildImmutable(
+    builder.getAlias(),
+    UCPTRIE_TYPE_SMALL,
+    UCPTRIE_VALUE_BITS_32,
+    status));
+    usrc_writeArray(f, "contexts = [\n  ", data->contexts, 16, data->contextsLength, "  ", "\n]\n");
+    usrc_writeArray(f, "ce32s = [\n  ", data->ce32s, 32, data->ce32sLength, "  ", "\n]\n");
+    usrc_writeArray(f, "ces = [\n  ", data->ces, 64, data->cesLength, "  ", "\n]\n");
+    // XXX Let's not put this here for now.
+    // usrc_writeUnicodeSet(f, tailoringSet.toUSet(), UPRV_TARGET_SYNTAX_TOML);
+    fprintf(f, "[trie]\n");
+    usrc_writeUCPTrie(f, "trie", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
+
+    fclose(f);
+}
+
+static void
+writeCollationTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UErrorCode *status) {
+    // TODO: Compute the need for a diacritic table and a jamo table
+    writeCollationMetadataTOML(outputdir, name, collationType, data, status);
+    if (U_FAILURE(*status)) {
+        return;
+    }
+    // Write collation data if either base is non-null or the name is root.
+    // Languages that only reorder scripts are otherwise root-like and have
+    // null base.
+    if (data->base || uprv_strcmp(name, "root") == 0) {
+        writeCollationDataTOML(outputdir, name, collationType, data, (!data->base && uprv_strcmp(name, "root") == 0), status);
+    }
+}
+
 static TableResource *
 addCollation(ParseState* state, TableResource  *result, const char *collationType,
              uint32_t startline, UErrorCode *status)
@@ -955,7 +1086,7 @@ addCollation(ParseState* state, TableResource  *result, const char *collationTyp
     }
     icu::CollationBuilder builder(base, !state->icu4xMode, intStatus);
     if(state->icu4xMode || (uprv_strncmp(collationType, "search", 6) == 0)) {
-        builder.disableFastLatin();  // build fast-Latin table unless search collator
+        builder.disableFastLatin();  // build fast-Latin table unless search collator or ICU4X
     }
     LocalPointer<icu::CollationTailoring> t(
             builder.parseAndBuild(rules, version, &importer, &parseError, intStatus));
@@ -977,6 +1108,19 @@ addCollation(ParseState* state, TableResource  *result, const char *collationTyp
             res_close(result);
             return NULL;
         }
+    }
+    if (state->icu4xMode) {
+        char *nameWithoutSuffix = static_cast<char *>(uprv_malloc(uprv_strlen(state->filename) + 1));
+        if (nameWithoutSuffix == NULL) {
+            *status = U_MEMORY_ALLOCATION_ERROR;
+            res_close(result);
+            return NULL;
+        }
+        uprv_strcpy(nameWithoutSuffix, state->filename);
+        *uprv_strrchr(nameWithoutSuffix, '.') = 0;
+
+        writeCollationTOML(state->outputdir, nameWithoutSuffix, collationType, t->data, status);
+        uprv_free(nameWithoutSuffix);
     }
     icu::LocalMemory<uint8_t> buffer;
     int32_t capacity = 100000;
