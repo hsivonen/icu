@@ -851,6 +851,35 @@ writeCollationMetadataTOML(const char* outputdir, const char* name, const char* 
     fclose(f);
 }
 
+static void
+writeCollationDiacriticsTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UErrorCode *status) {
+    FILE* f = openTOML(outputdir, name, collationType, "dia", status);
+    if (!f) {
+        return;
+    }
+    printf("writeCollationDiacriticsTOML %s %s\n", name, collationType);
+    uint32_t combiningDiacritics[0x0370-0x0300];
+    for (UChar32 c = 0x0300; c < 0x0370; ++c) {
+        uint32_t ce32 = data->getCE32(c);
+        if (ce32 == icu::Collation::FALLBACK_CE32) {
+            ce32 = data->base->getCE32(c);
+        }
+        if (c == 0x0344) {
+            // GREEK DIALYTIKA TONOS never occurs in NFD data
+            ce32 = icu::Collation::NO_CE32;
+
+        } else if (!icu::Collation::isSimpleOrLongCE32(ce32)) {
+            printf("UNSUPPORTED DIACRITIC CE32: lang: %s TAG: %X CE32: %X char: %X\n", name, icu::Collation::tagFromCE32(ce32), ce32, c);
+            fclose(f);
+            return;
+        }
+        combiningDiacritics[c - 0x0300] = ce32;
+
+    }
+    usrc_writeArray(f, "ce32s = [\n  ", combiningDiacritics, 32, 0x0370-0x0300, "  ", "\n]\n");
+    fclose(f);
+}
+
 static UBool
 convertTrie(const void *context, UChar32 start, UChar32 end, uint32_t value) {
     icu::IcuToolErrorCode status("genrb: convertTrie");
@@ -929,6 +958,18 @@ writeCollationDataTOML(const char* outputdir, const char* name, const char* coll
 static void
 writeCollationTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UErrorCode *status) {
     // TODO: Compute the need for a diacritic table and a jamo table
+    if (!data->base && uprv_strcmp(name, "root") == 0) {
+        writeCollationDiacriticsTOML(outputdir, name, collationType, data, status);
+    } else if (data->base && uprv_strcmp(name, "lt") != 0) {
+        for (UChar32 c = 0x0300; c < 0x0370; ++c) {
+            uint32_t ce32 = data->getCE32(c);
+            if ((ce32 != icu::Collation::FALLBACK_CE32) && (ce32 != data->base->getCE32(c))) {
+                writeCollationDiacriticsTOML(outputdir, name, collationType, data, status);
+                break;
+            }
+        }
+    }
+
     writeCollationMetadataTOML(outputdir, name, collationType, data, status);
     if (U_FAILURE(*status)) {
         return;
