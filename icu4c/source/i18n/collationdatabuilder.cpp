@@ -1488,6 +1488,20 @@ CollationDataBuilder::buildContext(ConditionalCE32 *head, UErrorCode &errorCode)
                     // The last suffix character has lccc!=0, allowing for discontiguous contractions.
                     flags |= Collation::CONTRACT_TRAILING_CCC;
                 }
+                if (icu4xMode && (flags & Collation::CONTRACT_HAS_STARTER) == 0) {
+                    for (int32_t i = 0; i < suffix.length();) {
+                        UChar32 c = suffix.char32At(i);
+                            if (!u_getCombiningClass(c)) {
+                                flags |= Collation::CONTRACT_HAS_STARTER;
+                                break;
+                            }
+                        if (c > 0xFFFF) {
+                            i += 2;
+                        } else {
+                            ++i;
+                        }
+                    }
+                }
                 contractionBuilder.add(suffix, (int32_t)cond->ce32, errorCode);
                 if(cond == lastCond) { break; }
                 cond = getConditionalCE32(cond->next);
