@@ -842,12 +842,13 @@ openTOML(const char* outputdir, const char* name, const char* collationType, con
 }
 
 static void
-writeCollationMetadataTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UErrorCode *status) {
+writeCollationMetadataTOML(const char* outputdir, const char* name, const char* collationType, const uint32_t metadataBits, UErrorCode *status) {
     FILE* f = openTOML(outputdir, name, collationType, "meta", status);
     if (!f) {
         return;
     }
     printf("writeCollationMetadataTOML %s %s\n", name, collationType);
+    fprintf(f, "bits = 0x%X\n", metadataBits);
     fclose(f);
 }
 
@@ -932,6 +933,16 @@ writeCollationDataTOML(const char* outputdir, const char* name, const char* coll
     }
 #endif
 
+    // It's unclear if the max variable values really can vary per tailoring, but ICU4C seems
+    // to assume so, so let's put them on the tailorings, even though currently they seem to
+    // the same for all tailorings.
+    uint16_t lastPrimaries[4];
+    for (int32_t i = 0; i < 4; ++i) {
+        // getLastPrimaryForGroup subtracts one from a 16-bit value, so we add one
+        // back to get a value that fits in 16 bits.
+        lastPrimaries[i] = (uint16_t)((data->getLastPrimaryForGroup(UCOL_REORDER_CODE_FIRST + i) + 1) >> 16);
+    }
+
     // Use the same value for out-of-range and default in the hope of not having to allocate
     // different blocks, since ICU4X never does out-of-range queries.
     uint32_t trieDefault = root ? icu::Collation::UNASSIGNED_CE32 : icu::Collation::FALLBACK_CE32;
@@ -947,6 +958,7 @@ writeCollationDataTOML(const char* outputdir, const char* name, const char* coll
     usrc_writeArray(f, "contexts = [\n  ", data->contexts, 16, data->contextsLength, "  ", "\n]\n");
     usrc_writeArray(f, "ce32s = [\n  ", data->ce32s, 32, data->ce32sLength, "  ", "\n]\n");
     usrc_writeArray(f, "ces = [\n  ", data->ces, 64, data->cesLength, "  ", "\n]\n");
+    usrc_writeArray(f, "last_primaries = [\n  ", lastPrimaries, 16, 4, "  ", "\n]\n");
     // XXX Let's not put this here for now.
     // usrc_writeUnicodeSet(f, tailoringSet.toUSet(), UPRV_TARGET_SYNTAX_TOML);
     fprintf(f, "[trie]\n");
@@ -956,30 +968,100 @@ writeCollationDataTOML(const char* outputdir, const char* name, const char* coll
 }
 
 static void
-writeCollationTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, UErrorCode *status) {
-    // TODO: Compute the need for a diacritic table and a jamo table
-    if (!data->base && uprv_strcmp(name, "root") == 0) {
+writeCollationTOML(const char* outputdir, const char* name, const char* collationType, const icu::CollationData* data, const icu::CollationSettings* settings, UErrorCode *status) {
+    UBool tailored = FALSE;
+    UBool tailoredDiacritics = FALSE;
+    UBool lithuanianDotAbove = (uprv_strcmp(name, "lt") == 0);
+    UBool reordering = FALSE;
+    // TODO: Compute the need for a jamo table
+    UBool isRoot = uprv_strcmp(name, "root") == 0;
+    if (!data->base && isRoot) {
         writeCollationDiacriticsTOML(outputdir, name, collationType, data, status);
-    } else if (data->base && uprv_strcmp(name, "lt") != 0) {
+        if (U_FAILURE(*status)) {
+            return;
+        }
+    } else if (data->base && !lithuanianDotAbove) {
         for (UChar32 c = 0x0300; c < 0x0370; ++c) {
             uint32_t ce32 = data->getCE32(c);
             if ((ce32 != icu::Collation::FALLBACK_CE32) && (ce32 != data->base->getCE32(c))) {
+                tailoredDiacritics = TRUE;
                 writeCollationDiacriticsTOML(outputdir, name, collationType, data, status);
+                if (U_FAILURE(*status)) {
+                    return;
+                }
                 break;
             }
         }
     }
 
-    writeCollationMetadataTOML(outputdir, name, collationType, data, status);
-    if (U_FAILURE(*status)) {
-        return;
+    if (settings->hasReordering()) {
+        reordering = TRUE;
+        // XXX Write reordering
     }
+
     // Write collation data if either base is non-null or the name is root.
     // Languages that only reorder scripts are otherwise root-like and have
     // null base.
-    if (data->base || uprv_strcmp(name, "root") == 0) {
-        writeCollationDataTOML(outputdir, name, collationType, data, (!data->base && uprv_strcmp(name, "root") == 0), status);
+    if (data->base || isRoot) {
+        tailored = !isRoot;
+        writeCollationDataTOML(outputdir, name, collationType, data, (!data->base && isRoot), status);
+        if (U_FAILURE(*status)) {
+            return;
+        }
     }
+
+    uint32_t maxVariable = (uint32_t)settings->getMaxVariable();
+    if (maxVariable >= 4) {
+        printf("Max variable out of range");
+        *status = U_INTERNAL_PROGRAM_ERROR;
+        return;
+    }
+
+    uint32_t metadataBits = (data->numericPrimary & 0xFF000000) | maxVariable;
+    if (tailored) {
+        printf("TAILORED %s\n", name);
+        metadataBits |= (1 << 3);
+    }
+    if (tailoredDiacritics) {
+        printf("DIACRITICS %s\n", name);
+        metadataBits |= (1 << 4);
+    }
+    // XXX jamo
+    if (reordering) {
+        printf("REORDERING %s\n", name);
+        metadataBits |= (1 << 6);
+    }
+    if (lithuanianDotAbove) {
+        printf("LITHUANIAN %s\n", name);
+        metadataBits |= (1 << 7);
+    }
+    if ((settings->options & icu::CollationSettings::BACKWARD_SECONDARY) != 0) {
+        printf("BACKWARD %s\n", name);
+        metadataBits |= (1 << 8);
+    }
+    if (settings->getAlternateHandling() == UCOL_SHIFTED) {
+        printf("ALTERNATE SHIFTED %s\n", name);
+        metadataBits |= (1 << 9);
+    }
+    switch (settings->getCaseFirst()) {
+        case UCOL_OFF:
+            break;
+        case UCOL_UPPER_FIRST:
+            printf("UPPER FIRST %s\n", name);
+            metadataBits |= (1 << 10);
+            metadataBits |= (1 << 11);
+            break;
+        case UCOL_LOWER_FIRST:
+            printf("LOWER FIRST %s\n", name);
+            metadataBits |= (1 << 10);
+            break;
+        default:
+            printf("Bogus case first value");
+            *status = U_INTERNAL_PROGRAM_ERROR;
+            return;
+    }
+
+    writeCollationMetadataTOML(outputdir, name, collationType, metadataBits, status);
 }
 
 static TableResource *
@@ -1125,7 +1207,7 @@ addCollation(ParseState* state, TableResource  *result, const char *collationTyp
         res_close(result);
         return NULL;  // TODO: use LocalUResourceBundlePointer for result
     }
-    icu::CollationBuilder builder(base, !state->icu4xMode, intStatus);
+    icu::CollationBuilder builder(base, state->icu4xMode, intStatus);
     if(state->icu4xMode || (uprv_strncmp(collationType, "search", 6) == 0)) {
         builder.disableFastLatin();  // build fast-Latin table unless search collator or ICU4X
     }
@@ -1160,7 +1242,7 @@ addCollation(ParseState* state, TableResource  *result, const char *collationTyp
         uprv_strcpy(nameWithoutSuffix, state->filename);
         *uprv_strrchr(nameWithoutSuffix, '.') = 0;
 
-        writeCollationTOML(state->outputdir, nameWithoutSuffix, collationType, t->data, status);
+        writeCollationTOML(state->outputdir, nameWithoutSuffix, collationType, t->data, t->settings, status);
         uprv_free(nameWithoutSuffix);
     }
     icu::LocalMemory<uint8_t> buffer;

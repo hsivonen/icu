@@ -83,7 +83,7 @@ binarySearch(const UVector64 &list, int64_t ce) {
 
 }  // namespace
 
-CollationBaseDataBuilder::CollationBaseDataBuilder(UErrorCode &errorCode)
+CollationBaseDataBuilder::CollationBaseDataBuilder(UBool icu4xMode, UErrorCode &errorCode)
         : CollationDataBuilder(errorCode),
           numericPrimary(0x12000000),
           firstHanPrimary(0), lastHanPrimary(0), hanStep(2),
@@ -91,6 +91,7 @@ CollationBaseDataBuilder::CollationBaseDataBuilder(UErrorCode &errorCode)
           scriptStartsLength(1) {
     uprv_memset(scriptsIndex, 0, sizeof(scriptsIndex));
     uprv_memset(scriptStarts, 0, sizeof(scriptStarts));
+    this->icu4xMode = icu4xMode;
 }
 
 CollationBaseDataBuilder::~CollationBaseDataBuilder() {

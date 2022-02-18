@@ -501,6 +501,7 @@ ContractionsAndExpansions::handleCE32(UChar32 start, UChar32 end, uint32_t ce32)
             ce32 = data->ce32s[Collation::indexFromCE32(ce32)];
             break;
         case Collation::U0000_TAG:
+            printf("U0000_TAG SEEN\n");
             U_ASSERT(start == 0 && end == 0);
             // Fetch the normal ce32 for U+0000 and continue.
             ce32 = data->ce32s[0];

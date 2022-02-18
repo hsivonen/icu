@@ -485,6 +485,7 @@ CollationDataBuilder::getSingleCE(UChar32 c, UErrorCode &errorCode) const {
             break;
         case Collation::U0000_TAG:
             U_ASSERT(c == 0);
+            printf("U0000_TAG seen three");
             // Fetch the normal ce32 for U+0000 and continue.
             ce32 = fromBase ? base->ce32s[0] : ce32s.elementAti(0);
             break;
@@ -744,6 +745,7 @@ CollationDataBuilder::encodeCEs(const int64_t ces[], int32_t cesLength,
                 (ce1 & INT64_C(0xffffffff00ffffff)) == Collation::COMMON_TERTIARY_CE &&
                 p0 != 0) {
             // Latin mini expansion
+            printf("ENCODED LATIN EXPANSION\n");
             return
                 p0 |
                 (((uint32_t)ce0 & 0xff00u) << 8) |
@@ -1344,9 +1346,12 @@ CollationDataBuilder::buildMappings(CollationData &data, UErrorCode &errorCode) 
     setDigitTags(errorCode);
     setLeadSurrogates(errorCode);
 
-    // For U+0000, move its normal ce32 into CE32s[0] and set U0000_TAG.
-    ce32s.setElementAt((int32_t)utrie2_get32(trie, 0), 0);
-    utrie2_set32(trie, 0, Collation::makeCE32FromTagAndIndex(Collation::U0000_TAG, 0), &errorCode);
+    if (!icu4xMode) {
+        printf("WILL USE U0000_TAG\n");
+        // For U+0000, move its normal ce32 into CE32s[0] and set U0000_TAG.
+        ce32s.setElementAt((int32_t)utrie2_get32(trie, 0), 0);
+        utrie2_set32(trie, 0, Collation::makeCE32FromTagAndIndex(Collation::U0000_TAG, 0), &errorCode);
+    }
 
     utrie2_freeze(trie, UTRIE2_32_VALUE_BITS, &errorCode);
     if(U_FAILURE(errorCode)) { return; }

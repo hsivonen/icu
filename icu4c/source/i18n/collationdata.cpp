@@ -37,6 +37,7 @@ CollationData::getIndirectCE32(uint32_t ce32) const {
     } else if(tag == Collation::LEAD_SURROGATE_TAG) {
         ce32 = Collation::UNASSIGNED_CE32;
     } else if(tag == Collation::U0000_TAG) {
+        printf("U0000_TAG seen too\n");
         // Fetch the normal ce32 for U+0000.
         ce32 = ce32s[0];
     }

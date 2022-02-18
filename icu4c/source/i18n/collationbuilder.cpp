@@ -267,11 +267,11 @@ CollationBuilder::parseAndBuild(const UnicodeString &ruleString,
     if(U_FAILURE(errorCode)) { return NULL; }
     if(dataBuilder->hasMappings()) {
         makeTailoredCEs(errorCode);
-        if (icu4xMode) {
+        if (!icu4xMode) {
             closeOverComposites(errorCode);
         }
         finalizeCEs(errorCode);
-        if (icu4xMode) {
+        if (!icu4xMode) {
             // Copy all of ASCII, and Latin-1 letters, into each tailoring.
             optimizeSet.add(0, 0x7f);
             optimizeSet.add(0xc0, 0xff);
@@ -759,7 +759,7 @@ CollationBuilder::addRelation(int32_t strength, const UnicodeString &prefix,
         // so that it is possible to explicitly provide the missing mappings.
         ce32 = addIfDifferent(prefix, str, ces, cesLength, ce32, errorCode);
     }
-    if (icu4xMode) {
+    if (!icu4xMode) {
         addWithClosure(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
     } else {
         addIfDifferent(nfdPrefix, nfdString, ces, cesLength, ce32, errorCode);
