@@ -419,7 +419,15 @@ void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t 
                 handleError(status, basename);
             }
         }
-        umutablecptrie_set(builder.getAlias(), pending.scalar, pending.descriptor + additional, status);
+        // It turns out it's better to swap the halves compared to the initial
+        // idea in order to put special marker values close to zero so that
+        // an important marker value becomes 1, so it's efficient to compare
+        // "1 or 0". Unfortunately, going through all the code to swap
+        // things is too error prone, so let's do the swapping here in one
+        // place.
+        uint32_t oldTrieValue = pending.descriptor + additional;
+        uint32_t swappedTrieValue = (oldTrieValue >> 16) | (oldTrieValue << 16);
+        umutablecptrie_set(builder.getAlias(), pending.scalar, swappedTrieValue, status);
     }
     LocalUCPTriePointer utrie(umutablecptrie_buildImmutable(
         builder.getAlias(),
@@ -725,14 +733,14 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                             status.set(U_INTERNAL_PROGRAM_ERROR);
                             handleError(status, basename);
                         }
-                        uint32_t shifted = uint32_t(rawUtf32[0]) << 16;
-                        umutablecptrie_set(nonRecursiveBuilder.getAlias(), c, shifted, status);
+                        umutablecptrie_set(nonRecursiveBuilder.getAlias(), c, uint32_t(rawUtf32[0]), status);
                     } else if (rawUtf32[0] <= 0xFFFF && rawUtf32[1] <= 0xFFFF) {
                         if (!rawUtf32[0] || !rawUtf32[1]) {
                             status.set(U_INTERNAL_PROGRAM_ERROR);
                             handleError(status, basename);
                         }
-                        uint32_t bmpPair = uint32_t(rawUtf32[0]) << 16 | uint32_t(rawUtf32[1]);
+                        // Swapped for consistency with the primary trie
+                        uint32_t bmpPair = uint32_t(rawUtf32[1]) << 16 | uint32_t(rawUtf32[0]);
                         umutablecptrie_set(nonRecursiveBuilder.getAlias(), c, bmpPair, status);
                     } else {
                         // Let's add 1 to index to make it always non-zero to distinguish
@@ -744,7 +752,7 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                             status.set(U_INTERNAL_PROGRAM_ERROR);
                             handleError(status, basename);
                         }
-                        umutablecptrie_set(nonRecursiveBuilder.getAlias(), c, index, status);
+                        umutablecptrie_set(nonRecursiveBuilder.getAlias(), c, index << 16, status);
                     }
                 }
             }
@@ -764,7 +772,6 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                 if (((utf32[i] == 0x0345) && (uprv_strcmp(basename, "uts46d") == 0)) || utf32[i] == 0xFF9E || utf32[i] == 0xFF9F) {
                     // Assert that iota subscript and half-width voicing marks never occur in these
                     // expansions in the normalization forms where they are special.
-                    printf("HER c: %X\n", c);
                     status.set(U_INTERNAL_PROGRAM_ERROR);
                     handleError(status, basename);
                 }
