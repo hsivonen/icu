@@ -589,6 +589,9 @@ void writePotentialCompositionPassThrough(const char* basename, const Normalizer
     handleError(status, basename);
 }
 
+// Special marker for the NFKD form of U+FDFA
+const int32_t FDFA_MARKER = 3;
+
 // Computes data for canonical decompositions
 void computeDecompositions(const char* basename, const USet* backwardCombiningStarters, std::vector<uint16_t>& storage16, std::vector<uint32_t>& storage32, USet* decompositionStartsWithNonStarter, USet* decompositionStartsWithBackwardCombiningStarter, std::vector<PendingDescriptor>& pendingTrieInsertions) {
     IcuToolErrorCode status("icuexportdata: computeDecompositions");
@@ -703,7 +706,7 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
         } else if (startsWithNonStarter) {
             // Insert a special marker
             len = 1;
-            utf32[0] = 2; // magic value (1 is reserved for U+FDFA)
+            utf32[0] = 2; // magic value
         } else {
             if (src == dst) {
                 continue;
@@ -758,8 +761,8 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             }
         }
         if (len == 1 && utf32[0] <= 0xFFFF) {
-            if (utf32[0] == 1) {
-                // 1 is reserved as a marker for the expansion of U+FDFA.
+            if (utf32[0] == FDFA_MARKER) {
+                // 3 is reserved as a marker for the expansion of U+FDFA.
                 status.set(U_INTERNAL_PROGRAM_ERROR);
                 handleError(status, basename);
             }
@@ -804,7 +807,7 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                     if (len == 18 && c == 0xFDFA) {
                         // Special marker for the one character whose decomposition
                         // is too long.
-                        pendingTrieInsertions.push_back({c, 1 << 16, supplementary});
+                        pendingTrieInsertions.push_back({c, FDFA_MARKER << 16, supplementary});
                         continue;
                     } else {
                         status.set(U_INTERNAL_PROGRAM_ERROR);
