@@ -596,6 +596,10 @@ const int32_t FDFA_MARKER = 3;
 // and the decomposition isn't the charecter itself.
 const int32_t SPECIAL_NON_STARTER_DECOMPOSITION_MARKER = 2;
 
+// Special marker for starters that decompose to themselves but that may
+// combine backwards under canonical composition
+const int32_t BACKWARD_COMBINING_STARTER_MARKER = 1;
+
 // Computes data for canonical decompositions
 void computeDecompositions(const char* basename, const USet* backwardCombiningStarters, std::vector<uint16_t>& storage16, std::vector<uint32_t>& storage32, USet* decompositionStartsWithNonStarter, USet* decompositionStartsWithBackwardCombiningStarter, std::vector<PendingDescriptor>& pendingTrieInsertions) {
     IcuToolErrorCode status("icuexportdata: computeDecompositions");
@@ -687,6 +691,7 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
         }
         uint8_t firstCombiningClass = u_getCombiningClass(utf32[0]);
         bool specialNonStarterDecomposition = false;
+        bool startsWithBackwardCombiningStarter = false;
         if (firstCombiningClass) {
             uset_add(decompositionStartsWithNonStarter, c);
             if (src != dst) {
@@ -698,11 +703,19 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                     handleError(status, basename);
                 }
             }
-        } else if (uset_contains(backwardCombiningStarters, c)) {
+        } else if (uset_contains(backwardCombiningStarters, utf32[0])) {
+            startsWithBackwardCombiningStarter = true;
             uset_add(decompositionStartsWithBackwardCombiningStarter, c);
         }
-        if (c != 2 && len == 1 && utf32[0] == 2) {
-            // 2 is reserved as a marker for decomposition starts with non-starter.
+        if (c != BACKWARD_COMBINING_STARTER_MARKER && len == 1 && utf32[0] == BACKWARD_COMBINING_STARTER_MARKER) {
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, basename);
+        }
+        if (c != SPECIAL_NON_STARTER_DECOMPOSITION_MARKER && len == 1 && utf32[0] == SPECIAL_NON_STARTER_DECOMPOSITION_MARKER) {
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, basename);
+        }
+        if (c != FDFA_MARKER && len == 1 && utf32[0] == FDFA_MARKER) {
             status.set(U_INTERNAL_PROGRAM_ERROR);
             handleError(status, basename);
         }
@@ -722,6 +735,9 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             }
         } else {
             if (src == dst) {
+                if (startsWithBackwardCombiningStarter) {
+                    pendingTrieInsertions.push_back({c, BACKWARD_COMBINING_STARTER_MARKER << 16, FALSE});
+                }
                 continue;
             }
             // ICU4X hard-codes ANGSTROM SIGN
@@ -774,10 +790,17 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             }
         }
         if (len == 1 && utf32[0] <= 0xFFFF) {
-            if (utf32[0] == FDFA_MARKER) {
-                // 3 is reserved as a marker for the expansion of U+FDFA.
-                status.set(U_INTERNAL_PROGRAM_ERROR);
-                handleError(status, basename);
+            if (startsWithBackwardCombiningStarter) {
+                if (mainNormalizer == nfdNormalizer) {
+                    // Not supposed to happen in NFD
+                    status.set(U_INTERNAL_PROGRAM_ERROR);
+                    handleError(status, basename);
+                } else if (!((utf32[0] >= 0x1161 && utf32[0] <= 0x1175) || (utf32[0] >= 0x11A8 && utf32[0] <= 0x11C2))) {
+                    // Other than conjoining jamo vowels and trails
+                    // unsupported for non-NFD.
+                    status.set(U_INTERNAL_PROGRAM_ERROR);
+                    handleError(status, basename);
+                }
             }
             // U+0345 is hard-coded in ICU4X
             if (!(c == 0x0345 && utf32[0] == 0x03B9)) {
@@ -792,8 +815,17 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                     handleError(status, basename);
                 }
             }
+            if (startsWithBackwardCombiningStarter) {
+                status.set(U_INTERNAL_PROGRAM_ERROR);
+                handleError(status, basename);
+            }
             pendingTrieInsertions.push_back({c, (uint32_t(utf32[0]) << 16) | uint32_t(utf32[1]), FALSE});
         } else {
+            if (startsWithBackwardCombiningStarter) {
+                status.set(U_INTERNAL_PROGRAM_ERROR);
+                handleError(status, basename);
+            }
+
             UBool supplementary = FALSE;
             UBool nonInitialStarter = FALSE;
             for (int32_t i = 0; i < len; ++i) {
