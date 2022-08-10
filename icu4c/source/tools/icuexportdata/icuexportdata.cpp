@@ -592,6 +592,10 @@ void writePotentialCompositionPassThrough(const char* basename, const Normalizer
 // Special marker for the NFKD form of U+FDFA
 const int32_t FDFA_MARKER = 3;
 
+// Special marker for characters whose decomposition starts with a non-starter
+// and the decomposition isn't the charecter itself.
+const int32_t SPECIAL_NON_STARTER_DECOMPOSITION_MARKER = 2;
+
 // Computes data for canonical decompositions
 void computeDecompositions(const char* basename, const USet* backwardCombiningStarters, std::vector<uint16_t>& storage16, std::vector<uint32_t>& storage32, USet* decompositionStartsWithNonStarter, USet* decompositionStartsWithBackwardCombiningStarter, std::vector<PendingDescriptor>& pendingTrieInsertions) {
     IcuToolErrorCode status("icuexportdata: computeDecompositions");
@@ -681,13 +685,18 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             status.set(U_INTERNAL_PROGRAM_ERROR);
             handleError(status, basename);
         }
-        bool startsWithNonStarter = u_getCombiningClass(utf32[0]);
-        if (startsWithNonStarter) {
+        uint8_t firstCombiningClass = u_getCombiningClass(utf32[0]);
+        bool specialNonStarterDecomposition = false;
+        if (firstCombiningClass) {
             uset_add(decompositionStartsWithNonStarter, c);
-            if (src != dst && !(c == 0x0340 || c == 0x0341 || c == 0x0343 || c == 0x0344 || c == 0x0F73 || c == 0x0F75 || c == 0x0F81 || c == 0xFF9E || c == 0xFF9F)) {
-                // A character whose decomposition starts with a non-starter and isn't the same as the character itself and isn't already hard-coded into ICU4X.
-                status.set(U_INTERNAL_PROGRAM_ERROR);
-                handleError(status, basename);
+            if (src != dst) {
+                if (c == 0x0340 || c == 0x0341 || c == 0x0343 || c == 0x0344 || c == 0x0F73 || c == 0x0F75 || c == 0x0F81 || c == 0xFF9E || c == 0xFF9F) {
+                    specialNonStarterDecomposition = true;
+                } else {
+                    // A character whose decomposition starts with a non-starter and isn't the same as the character itself and isn't already hard-coded into ICU4X.
+                    status.set(U_INTERNAL_PROGRAM_ERROR);
+                    handleError(status, basename);
+                }
             }
         } else if (uset_contains(backwardCombiningStarters, c)) {
             uset_add(decompositionStartsWithBackwardCombiningStarter, c);
@@ -703,10 +712,14 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             if (dst == nfd) {
                 continue;
             }
-        } else if (startsWithNonStarter) {
-            // Insert a special marker
+        } else if (firstCombiningClass) {
             len = 1;
-            utf32[0] = 2; // magic value
+            if (specialNonStarterDecomposition) {
+                utf32[0] = SPECIAL_NON_STARTER_DECOMPOSITION_MARKER; // magic value
+            } else {
+                // Use the surrogate range to store the canonical combining class
+                utf32[0] = 0xD800 | UChar32(firstCombiningClass);
+            }
         } else {
             if (src == dst) {
                 continue;
