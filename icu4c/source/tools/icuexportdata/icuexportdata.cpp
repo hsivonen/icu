@@ -392,7 +392,7 @@ void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t 
     for (int32_t i = pendingTrieInsertions.size() - 1; i >= 0; --i) {
         const PendingDescriptor& pending = pendingTrieInsertions[i];
         uint32_t additional = 0;
-        if (!(pending.descriptor & 0xFFFF0000)) {
+        if (!(pending.descriptor & 0xFFFE0000)) {
             uint32_t offset = pending.descriptor & 0xFFF;
             if (!pending.supplementary) {
                 if (offset >= baseSize16) {
@@ -593,18 +593,52 @@ void writePotentialCompositionPassThrough(const char* basename, const Normalizer
 const int32_t FDFA_MARKER = 3;
 
 // Special marker for characters whose decomposition starts with a non-starter
-// and the decomposition isn't the charecter itself.
+// and the decomposition isn't the character itself.
 const int32_t SPECIAL_NON_STARTER_DECOMPOSITION_MARKER = 2;
 
 // Special marker for starters that decompose to themselves but that may
 // combine backwards under canonical composition
 const int32_t BACKWARD_COMBINING_STARTER_MARKER = 1;
 
+/// Marker that a complex decomposition isn't round-trippable
+/// under re-composition.
+const uint32_t NON_ROUND_TRIP_MARKER = 1;
+
+UBool permissibleBmpPair(UBool knownToRoundTrip, UChar32 c, UChar32 second) {
+    if (knownToRoundTrip) {
+        return TRUE;
+    }
+    // Nuktas, Hebrew presentation forms and polytonic Greek with oxia
+    // are special-cased in ICU4X.
+    if (c >= 0xFB1D && c <= 0xFB4E) {
+        // Hebrew presentation forms
+        return TRUE;
+    }
+    if (c >= 0x1F71 && c <= 0x1FFB) {
+        // Polytonic Greek with oxia
+        return TRUE;
+    }
+    if ((second & 0x7F) == 0x3C && second >= 0x0900 && second <= 0x0BFF) {
+        // Nukta
+        return TRUE;
+    }
+    // To avoid more branchiness, 4 characters that decompose to
+    // a BMP starter followed by a BMP non-starter are excluded
+    // from being encoded directly into the trie value and are
+    // handled as complex decompositions instead. These are:
+    // U+0F76 TIBETAN VOWEL SIGN VOCALIC R
+    // U+0F78 TIBETAN VOWEL SIGN VOCALIC L
+    // U+212B ANGSTROM SIGN
+    // U+2ADC FORKING
+    return FALSE;
+}
+
 // Computes data for canonical decompositions
 void computeDecompositions(const char* basename, const USet* backwardCombiningStarters, std::vector<uint16_t>& storage16, std::vector<uint32_t>& storage32, USet* decompositionStartsWithNonStarter, USet* decompositionStartsWithBackwardCombiningStarter, std::vector<PendingDescriptor>& pendingTrieInsertions) {
     IcuToolErrorCode status("icuexportdata: computeDecompositions");
     const Normalizer2* mainNormalizer;
     const Normalizer2* nfdNormalizer = Normalizer2::getNFDInstance(status);
+    const Normalizer2* nfcNormalizer = Normalizer2::getNFCInstance(status);
     FILE* f = NULL;
     std::vector<uint32_t> nonRecursive32;
     LocalUMutableCPTriePointer nonRecursiveBuilder(umutablecptrie_open(0, 0, status));
@@ -656,6 +690,10 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
         }
         UnicodeString src;
         UnicodeString dst;
+        // True if we're building non-NFD or we're building NFD but
+        // the `c` round trips to NFC.
+        // False if we're building NFD and `c` does not round trip to NFC.
+        UBool nonNfdOrRoundTrips = TRUE;
         src.append(c);
         if (mainNormalizer != nfdNormalizer) {
             UnicodeString inter;
@@ -663,6 +701,9 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             nfdNormalizer->normalize(inter, dst, status);
         } else {
             nfdNormalizer->normalize(src, dst, status);
+            UnicodeString nfc;
+            nfcNormalizer->normalize(dst, nfc, status);
+            nonNfdOrRoundTrips = (src == nfc);
         }
         int32_t len = dst.toUTF32(utf32, DECOMPOSITION_BUFFER_SIZE, status);
         if (!len || (len == 1 && utf32[0] == 0xFFFD && c != 0xFFFD)) {
@@ -806,7 +847,12 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             if (!(c == 0x0345 && utf32[0] == 0x03B9)) {
                 pendingTrieInsertions.push_back({c, uint32_t(utf32[0]) << 16, FALSE});
             }
-        } else if (len == 2 && utf32[0] <= 0xFFFF && utf32[1] <= 0xFFFF && !u_getCombiningClass(utf32[0]) && u_getCombiningClass(utf32[1])) {
+        } else if (len == 2 &&
+                   utf32[0] <= 0xFFFF &&
+                   utf32[1] <= 0xFFFF &&
+                   !u_getCombiningClass(utf32[0]) &&
+                   u_getCombiningClass(utf32[1]) &&
+                   permissibleBmpPair(nonNfdOrRoundTrips, c, utf32[1])) {
             for (int32_t i = 0; i < len; ++i) {
                 if (((utf32[i] == 0x0345) && (uprv_strcmp(basename, "uts46d") == 0)) || utf32[i] == 0xFF9E || utf32[i] == 0xFF9F) {
                     // Assert that iota subscript and half-width voicing marks never occur in these
@@ -955,7 +1001,12 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                     }
                 }
             }
-            pendingTrieInsertions.push_back({c, descriptor, supplementary});
+
+            uint32_t nonRoundTripMarker = 0;
+            if (!nonNfdOrRoundTrips) {
+                nonRoundTripMarker = (NON_ROUND_TRIP_MARKER << 16);
+            }
+            pendingTrieInsertions.push_back({c, descriptor | nonRoundTripMarker, supplementary});
         }
     }
     if (storage16.size() + storage32.size() > 0xFFF) {
