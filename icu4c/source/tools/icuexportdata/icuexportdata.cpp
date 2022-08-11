@@ -490,105 +490,6 @@ void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t 
     handleError(status, basename);
 }
 
-void writeNopCompositionPassThrough(const char* basename) {
-    IcuToolErrorCode status("icuexportdata: writeNopCompositionPassThrough");
-    FILE* f = prepareOutputFile(basename);
-
-    fprintf(f, "first = 0x0\n");
-
-    LocalUMutableCPTriePointer builder(umutablecptrie_open(0xFF, 0xFF, status));
-
-    LocalUCPTriePointer utrie(umutablecptrie_buildImmutable(
-        builder.getAlias(),
-        trieType,
-        UCPTRIE_VALUE_BITS_8,
-        status));
-    handleError(status, basename);
-
-    fprintf(f, "[trie]\n");
-    usrc_writeUCPTrie(f, "trie", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
-
-    fclose(f);
-    handleError(status, basename);
-}
-
-void writePotentialCompositionPassThrough(const char* basename, const Normalizer2* norm, const USet* decompositionStartsWithNonStarter, const USet* decompositionStartsWithBackwardCombiningStarter, USet* potentialPassthroughAndNotBackwardCombining) {
-    IcuToolErrorCode status("icuexportdata: writePotentialCompositionPassThrough");
-    FILE* f = prepareOutputFile(basename);
-
-    const Normalizer2* nfc = nullptr;
-    if (!norm) {
-        // UTS 46 case
-        norm = Normalizer2::getInstance(NULL, "uts46", UNORM2_COMPOSE, status);
-        nfc = Normalizer2::getNFCInstance(status);
-    }
-    for (UChar32 c = 0; c <= 0x10FFFF; ++c) {
-        if (c >= 0xD800 && c < 0xE000) {
-            // Surrogate
-            continue;
-        }
-        if (uset_contains(decompositionStartsWithNonStarter, c) || uset_contains(decompositionStartsWithBackwardCombiningStarter, c)) {
-            continue;
-        }
-        UnicodeString src;
-        UnicodeString dst;
-        src.append(c);
-        norm->normalize(src, dst, status);
-        if (nfc && (dst.isEmpty() || (dst == u"\uFFFD" && c != 0xFFFD))) {
-            // UTS 46 ignored and disallowed fall back to NFC for data
-            // overlap.
-            dst.truncate(0);
-            nfc->normalize(src, dst, status);
-        }
-        if (src == dst) {
-            uset_add(potentialPassthroughAndNotBackwardCombining, c);
-        }
-    }
-
-    // There are fancier ways to do this, but let's keep things
-    // very simple: Deliberately not working this into the above
-    // loop and not extracting this from the inversion list
-    // directly.
-    for (UChar32 c = 0; c <= 0x10FFFF; ++c) {
-        if (!uset_contains(potentialPassthroughAndNotBackwardCombining, c)) {
-            fprintf(f, "first = 0x%X\n", c);
-            break;
-        }
-    }
-
-    // 8 bits per trie value. Default is 0, which means pass-through.
-    // That is, the lookup key isn't actually a UChar32 but a UChar32
-    // divided by 8, but that's still in range, so things work despite
-    // the data structure not being meant to be used like this.
-    LocalUMutableCPTriePointer builder(umutablecptrie_open(0, 0, status));
-
-    for (int32_t i = 0; i < ((0x10FFFF + 1)/8); ++i) {
-        uint32_t trieVal = 0;
-        for (int32_t j = 0; j < 8; ++j) {
-            UChar32 c = i*8 + j;
-            if (!uset_contains(potentialPassthroughAndNotBackwardCombining, c)) {
-                trieVal |= (1 << j);
-            }
-        }
-        if (trieVal) {
-            umutablecptrie_set(builder.getAlias(), UChar32(i), trieVal, status);
-        }
-    }
-
-    LocalUCPTriePointer utrie(umutablecptrie_buildImmutable(
-        builder.getAlias(),
-        trieType,
-        UCPTRIE_VALUE_BITS_8,
-        status));
-    handleError(status, basename);
-
-    fprintf(f, "[trie]\n");
-    usrc_writeUCPTrie(f, "trie", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
-
-    fclose(f);
-    handleError(status, basename);
-}
-
 // Special marker for the NFKD form of U+FDFA
 const int32_t FDFA_MARKER = 3;
 
@@ -1317,30 +1218,6 @@ int exportNorm() {
 
     writeDecompositionTables("nfdex", storage16.data(), baseSize16, storage32.data(), baseSize32);
     writeDecompositionTables("nfkdex", storage16.data() + baseSize16, supplementSize16, storage32.data() + baseSize32, supplementSize32);
-
-    USet* nfcPotentialPassthroughAndNotBackwardCombining = uset_openEmpty();
-    const Normalizer2* nfc = Normalizer2::getNFCInstance(status);
-    writePotentialCompositionPassThrough("nfc", nfc, nfdDecompositionStartsWithNonStarter, nfdDecompositionStartsWithBackwardCombiningStarter, nfcPotentialPassthroughAndNotBackwardCombining);
-
-    USet* nfkcPotentialPassthroughAndNotBackwardCombining = uset_openEmpty();
-    const Normalizer2* nfkc = Normalizer2::getNFKCInstance(status);
-    writePotentialCompositionPassThrough("nfkc", nfkc, nfkdDecompositionStartsWithNonStarter, nfkdDecompositionStartsWithBackwardCombiningStarter, nfkcPotentialPassthroughAndNotBackwardCombining);
-
-    USet* uts46PotentialPassthroughAndNotBackwardCombining = uset_openEmpty();
-    writePotentialCompositionPassThrough("uts46", nullptr, uts46DecompositionStartsWithNonStarter, uts46DecompositionStartsWithBackwardCombiningStarter, uts46PotentialPassthroughAndNotBackwardCombining);
-
-    writeNopCompositionPassThrough("passthroughnop");
-
-    // Check that NFKC set has no characters that NFC doesn't also have.
-    uset_removeAll(nfkcPotentialPassthroughAndNotBackwardCombining, nfcPotentialPassthroughAndNotBackwardCombining);
-    if (!uset_isEmpty(nfkcPotentialPassthroughAndNotBackwardCombining)) {
-        status.set(U_INTERNAL_PROGRAM_ERROR);
-        handleError(status, "exportNorm");
-    }
-
-    uset_close(nfcPotentialPassthroughAndNotBackwardCombining);
-    uset_close(nfkcPotentialPassthroughAndNotBackwardCombining);
-    uset_close(uts46PotentialPassthroughAndNotBackwardCombining);
 
     uset_close(nfdDecompositionStartsWithNonStarter);
     uset_close(nfkdDecompositionStartsWithNonStarter);
