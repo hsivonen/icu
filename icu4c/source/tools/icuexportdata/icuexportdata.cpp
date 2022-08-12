@@ -468,9 +468,7 @@ void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t 
 
         USet* iotaCheck = uset_cloneAsThawed(reference);
         uset_removeAll(iotaCheck, uset);
-        if (uset_equals(iotaCheck, iotaSubscript)) {
-            flags |= (1 << 1);
-        } else if (!uset_isEmpty(iotaCheck)) {
+        if (!(uset_equals(iotaCheck, iotaSubscript)) && !uset_isEmpty(iotaCheck)) {
             // The result was neither empty nor contained exactly
             // the iota subscript. The ICU4X normalizer doesn't
             // know how to deal with this case.
@@ -762,10 +760,7 @@ void computeDecompositions(const char* basename,
                     handleError(status, basename);
                 }
             }
-            // U+0345 is hard-coded in ICU4X
-            if (!(c == 0x0345 && utf32[0] == 0x03B9)) {
-                pendingTrieInsertions.push_back({c, uint32_t(utf32[0]) << 16, FALSE});
-            }
+            pendingTrieInsertions.push_back({c, uint32_t(utf32[0]) << 16, FALSE});
         } else if (len == 2 &&
                    utf32[0] <= 0xFFFF &&
                    utf32[1] <= 0xFFFF &&
