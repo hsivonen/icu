@@ -380,7 +380,7 @@ void writeDecompositionTables(const char* basename, const uint16_t* ptr16, size_
     fclose(f);
 }
 
-void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t baseSize32, uint32_t supplementSize16, USet* uset, USet* reference, const std::vector<PendingDescriptor>& pendingTrieInsertions) {
+void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t baseSize32, uint32_t supplementSize16, USet* uset, USet* reference, const std::vector<PendingDescriptor>& pendingTrieInsertions, char16_t passthroughCap) {
     IcuToolErrorCode status("icuexportdata: writeDecompositionData");
     FILE* f = prepareOutputFile(basename);
 
@@ -483,6 +483,7 @@ void writeDecompositionData(const char* basename, uint32_t baseSize16, uint32_t 
         uset_close(halfWidthVoicing);
 
         fprintf(f, "flags = 0x%X\n", flags);
+        fprintf(f, "cap = 0x%X\n", passthroughCap);
     }
     fprintf(f, "[trie]\n");
     usrc_writeUCPTrie(f, "trie", utrie.getAlias(), UPRV_TARGET_SYNTAX_TOML);
@@ -535,7 +536,15 @@ UBool permissibleBmpPair(UBool knownToRoundTrip, UChar32 c, UChar32 second) {
 }
 
 // Computes data for canonical decompositions
-void computeDecompositions(const char* basename, const USet* backwardCombiningStarters, std::vector<uint16_t>& storage16, std::vector<uint32_t>& storage32, USet* decompositionStartsWithNonStarter, USet* decompositionStartsWithBackwardCombiningStarter, std::vector<PendingDescriptor>& pendingTrieInsertions) {
+void computeDecompositions(const char* basename,
+                           const USet* backwardCombiningStarters,
+                           std::vector<uint16_t>& storage16,
+                           std::vector<uint32_t>& storage32,
+                           USet* decompositionStartsWithNonStarter,
+                           USet* decompositionStartsWithBackwardCombiningStarter,
+                           std::vector<PendingDescriptor>& pendingTrieInsertions,
+                           UChar32& decompositionPassthroughBound,
+                           UChar32& compositionPassthroughBound) {
     IcuToolErrorCode status("icuexportdata: computeDecompositions");
     const Normalizer2* mainNormalizer;
     const Normalizer2* nfdNormalizer = Normalizer2::getNFDInstance(status);
@@ -635,6 +644,8 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
         bool specialNonStarterDecomposition = false;
         bool startsWithBackwardCombiningStarter = false;
         if (firstCombiningClass) {
+            decompositionPassthroughBound = c;
+            compositionPassthroughBound = c;
             uset_add(decompositionStartsWithNonStarter, c);
             if (src != dst) {
                 if (c == 0x0340 || c == 0x0341 || c == 0x0343 || c == 0x0344 || c == 0x0F73 || c == 0x0F75 || c == 0x0F81 || c == 0xFF9E || c == 0xFF9F) {
@@ -646,6 +657,7 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                 }
             }
         } else if (uset_contains(backwardCombiningStarters, utf32[0])) {
+            compositionPassthroughBound = c;
             startsWithBackwardCombiningStarter = true;
             uset_add(decompositionStartsWithBackwardCombiningStarter, c);
         }
@@ -667,6 +679,8 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
             if (dst == nfd) {
                 continue;
             }
+            decompositionPassthroughBound = c;
+            compositionPassthroughBound = c;
         } else if (firstCombiningClass) {
             len = 1;
             if (specialNonStarterDecomposition) {
@@ -682,6 +696,7 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                 }
                 continue;
             }
+            decompositionPassthroughBound = c;
             // ICU4X hard-codes ANGSTROM SIGN
             if (c != 0x212B) {
                 UnicodeString raw;
@@ -730,6 +745,9 @@ void computeDecompositions(const char* basename, const USet* backwardCombiningSt
                     }
                 }
             }
+        }
+        if (!nonNfdOrRoundTrips) {
+            compositionPassthroughBound = c;
         }
         if (len == 1 && utf32[0] <= 0xFFFF) {
             if (startsWithBackwardCombiningStarter) {
@@ -1194,7 +1212,22 @@ int exportNorm() {
     USet* nfdDecompositionStartsWithNonStarter = uset_openEmpty();
     USet* nfdDecompositionStartsWithBackwardCombiningStarter = uset_openEmpty();
     std::vector<PendingDescriptor> nfdPendingTrieInsertions;
-    computeDecompositions("nfd", backwardCombiningStarters, storage16, storage32, nfdDecompositionStartsWithNonStarter, nfdDecompositionStartsWithBackwardCombiningStarter, nfdPendingTrieInsertions);
+    UChar32 nfdBound = 0x10FFFF;
+    UChar32 nfcBound = 0x10FFFF;
+    computeDecompositions("nfd",
+                          backwardCombiningStarters,
+                          storage16,
+                          storage32,
+                          nfdDecompositionStartsWithNonStarter,
+                          nfdDecompositionStartsWithBackwardCombiningStarter,
+                          nfdPendingTrieInsertions,
+                          nfdBound,
+                          nfcBound);
+    if (!(nfdBound == 0xC0 && nfcBound == 0x300)) {
+        // Unexpected bounds for NFD/NFC.
+        status.set(U_INTERNAL_PROGRAM_ERROR);
+        handleError(status, "exportNorm");
+    }
 
     uint32_t baseSize16 = storage16.size();
     uint32_t baseSize32 = storage32.size();
@@ -1202,19 +1235,69 @@ int exportNorm() {
     USet* nfkdDecompositionStartsWithNonStarter = uset_openEmpty();
     USet* nfkdDecompositionStartsWithBackwardCombiningStarter = uset_openEmpty();
     std::vector<PendingDescriptor> nfkdPendingTrieInsertions;
-    computeDecompositions("nfkd", backwardCombiningStarters, storage16, storage32, nfkdDecompositionStartsWithNonStarter, nfkdDecompositionStartsWithBackwardCombiningStarter, nfkdPendingTrieInsertions);
+    UChar32 nfkdBound = 0x10FFFF;
+    UChar32 nfkcBound = 0x10FFFF;
+    computeDecompositions("nfkd",
+                          backwardCombiningStarters,
+                          storage16,
+                          storage32,
+                          nfkdDecompositionStartsWithNonStarter,
+                          nfkdDecompositionStartsWithBackwardCombiningStarter,
+                          nfkdPendingTrieInsertions,
+                          nfkdBound,
+                          nfkcBound);
+    if (!(nfkdBound <= 0xC0 && nfkcBound <= 0x300)) {
+        status.set(U_INTERNAL_PROGRAM_ERROR);
+        handleError(status, "exportNorm");
+    }
+    if (nfkcBound > 0xC0) {
+        if (nfkdBound != 0xC0) {
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, "exportNorm");
+        }
+    } else {
+        if (nfkdBound != nfkcBound) {
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, "exportNorm");
+        }
+    }
 
     USet* uts46DecompositionStartsWithNonStarter = uset_openEmpty();
     USet* uts46DecompositionStartsWithBackwardCombiningStarter = uset_openEmpty();
     std::vector<PendingDescriptor> uts46PendingTrieInsertions;
-    computeDecompositions("uts46d", backwardCombiningStarters, storage16, storage32, uts46DecompositionStartsWithNonStarter, uts46DecompositionStartsWithBackwardCombiningStarter, uts46PendingTrieInsertions);
+    UChar32 uts46dBound = 0x10FFFF;
+    UChar32 uts46Bound = 0x10FFFF;
+    computeDecompositions("uts46d",
+                          backwardCombiningStarters,
+                          storage16,
+                          storage32,
+                          uts46DecompositionStartsWithNonStarter,
+                          uts46DecompositionStartsWithBackwardCombiningStarter,
+                          uts46PendingTrieInsertions,
+                          uts46dBound,
+                          uts46Bound);
+    if (!(uts46dBound <= 0xC0 && uts46Bound <= 0x300)) {
+        status.set(U_INTERNAL_PROGRAM_ERROR);
+        handleError(status, "exportNorm");
+    }
+    if (uts46Bound > 0xC0) {
+        if (uts46dBound != 0xC0) {
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, "exportNorm");
+        }
+    } else {
+        if (uts46dBound != uts46Bound) {
+            status.set(U_INTERNAL_PROGRAM_ERROR);
+            handleError(status, "exportNorm");
+        }
+    }
 
     uint32_t supplementSize16 = storage16.size() - baseSize16;
     uint32_t supplementSize32 = storage32.size() - baseSize32;
 
-    writeDecompositionData("nfd", baseSize16, baseSize32, supplementSize16, nfdDecompositionStartsWithNonStarter, nullptr, nfdPendingTrieInsertions);
-    writeDecompositionData("nfkd", baseSize16, baseSize32, supplementSize16, nfkdDecompositionStartsWithNonStarter, nfdDecompositionStartsWithNonStarter, nfkdPendingTrieInsertions);
-    writeDecompositionData("uts46d", baseSize16, baseSize32, supplementSize16, uts46DecompositionStartsWithNonStarter, nfdDecompositionStartsWithNonStarter, uts46PendingTrieInsertions);
+    writeDecompositionData("nfd", baseSize16, baseSize32, supplementSize16, nfdDecompositionStartsWithNonStarter, nullptr, nfdPendingTrieInsertions, char16_t(nfcBound));
+    writeDecompositionData("nfkd", baseSize16, baseSize32, supplementSize16, nfkdDecompositionStartsWithNonStarter, nfdDecompositionStartsWithNonStarter, nfkdPendingTrieInsertions, char16_t(nfkcBound));
+    writeDecompositionData("uts46d", baseSize16, baseSize32, supplementSize16, uts46DecompositionStartsWithNonStarter, nfdDecompositionStartsWithNonStarter, uts46PendingTrieInsertions, char16_t(uts46Bound));
 
     writeDecompositionTables("nfdex", storage16.data(), baseSize16, storage32.data(), baseSize32);
     writeDecompositionTables("nfkdex", storage16.data() + baseSize16, supplementSize16, storage32.data() + baseSize32, supplementSize32);
